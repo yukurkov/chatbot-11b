@@ -29,8 +29,8 @@ JSON_FILE = Path(JSON_DIR) / "user_data.json"
 # Создаём директорию, если её нет
 os.makedirs(JSON_DIR, exist_ok=True)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отправляет приветствие и клавиатуру с тремя кнопками."""
+async def show_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает стартовое меню с тремя кнопками."""
     user = update.effective_user
     keyboard = [
         [InlineKeyboardButton("📖 Указать прочитанные страницы", callback_data='report_pages')],
@@ -39,10 +39,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_html(
-        rf"Привет, {user.mention_html()}! Выберите действие:",
-        reply_markup=reply_markup,
-    )
+    if update.message:
+        await update.message.reply_html(
+            rf"Выберите действие:",
+            reply_markup=reply_markup,
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            text="Выберите действие:",
+            reply_markup=reply_markup
+        )
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отправляет приветствие и показывает стартовое меню."""
+    user = update.effective_user
+    await update.message.reply_html(rf"Привет, {user.mention_html()}!")
+    await show_start_menu(update, context)
     return REPORT_PAGES
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -57,10 +69,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(text="⏱ Введите количество минут упражнений за эту неделю:")
         return REPORT_EXERCISE
     elif query.data == 'show_results':
-        return await show_weekly_results(query)
+        return await show_weekly_results(query, context)
 
-async def show_weekly_results(query) -> int:
-    """Показывает результаты пользователя за текущую неделю."""
+async def show_weekly_results(query, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает результаты пользователя за текущую неделю и возвращает в главное меню."""
     user_id = query.from_user.id
     today = datetime.now()
     start_of_week = today - timedelta(days=today.weekday())  # Понедельник текущей недели
@@ -70,6 +82,7 @@ async def show_weekly_results(query) -> int:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         await query.edit_message_text("📊 Данные не найдены. Вы ещё не вводили результаты.")
+        await show_start_menu(query, context)
         return ConversationHandler.END
 
     user_data = data.get(str(user_id), {})
@@ -86,32 +99,39 @@ async def show_weekly_results(query) -> int:
         if datetime.strptime(entry["date"], "%Y-%m-%d %H:%M:%S") >= start_of_week
     ]
 
-    # Берём последние значения
-    last_pages = weekly_pages[-1]["value"] if weekly_pages else 0
-    last_exercise = weekly_exercise[-1]["value"] if weekly_exercise else 0
+    # Суммируем значения за неделю
+    total_pages = sum(entry["value"] for entry in weekly_pages)
+    total_exercise = sum(entry["value"] for entry in weekly_exercise)
 
     # Оценка результатов
-    if last_pages == 0 and last_exercise == 0:
+    if total_pages == 0 and total_exercise == 0:
         message = "📊 Вы ещё не вводили данные за эту неделю."
     else:
-        is_good = last_pages >= 200 and last_exercise >= 120
+        is_good = total_pages >= 200 and total_exercise >= 120
         message = (
-            f"📊 Результаты за неделю:\n"
-            f"📖 Прочитано страниц: {last_pages}\n"
-            f"🏋️ Минут упражнений: {last_exercise}\n\n"
-            f"{'✅ Молодчик! Так держать!' if is_good else '➡️ Можно лучше! Ставьте цели и достигайте их!'}"
+            f"📊 Ваши результаты за неделю:\n"
+            f"📖 Всего прочитано страниц: {total_pages}\n"
+            f"🏋️ Всего минут упражнений: {total_exercise}\n\n"
+            f"{'✅ Молодец! Так держать!' if is_good else '➡️ Можно лучше! Ставьте цели и достигайте их!'}"
         )
 
     await query.edit_message_text(text=message)
+    await show_start_menu(query, context)
     return ConversationHandler.END
 
 async def save_pages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Сохраняет количество страниц в JSON."""
-    return await save_data(update, "pages", "📖 Сохранено: {} страниц.")
+    """Сохраняет количество страниц в JSON и показывает стартовое меню."""
+    result = await save_data(update, "pages", "📖 Сохранено: {} страниц.")
+    if result == ConversationHandler.END:
+        await show_start_menu(update, context)
+    return result
 
 async def save_exercise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Сохраняет минуты упражнений в JSON."""
-    return await save_data(update, "exercise_minutes", "🏋️ Сохранено: {} минут упражнений.")
+    """Сохраняет минуты упражнений в JSON и показывает стартовое меню."""
+    result = await save_data(update, "exercise_minutes", "🏋️ Сохранено: {} минут упражнений.")
+    if result == ConversationHandler.END:
+        await show_start_menu(update, context)
+    return result
 
 async def save_data(update: Update, field: str, success_message: str) -> int:
     """Общая функция для сохранения данных."""
@@ -120,7 +140,7 @@ async def save_data(update: Update, field: str, success_message: str) -> int:
         if value < 0:
             raise ValueError
     except ValueError:
-        await update.message.reply_text("❌ Не кури сюда!**.")
+        await update.message.reply_text("❌ Пожалуйста, введите положительное число.")
         return REPORT_PAGES if field == "pages" else REPORT_EXERCISE
 
     user_id = update.effective_user.id
@@ -147,8 +167,9 @@ async def save_data(update: Update, field: str, success_message: str) -> int:
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отменяет ввод."""
+    """Отменяет ввод и показывает стартовое меню."""
     await update.message.reply_text("🚫 Действие отменено.")
+    await show_start_menu(update, context)
     return ConversationHandler.END
 
 def main() -> None:
