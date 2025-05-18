@@ -5,7 +5,7 @@ repositories:
 
     echobot:
 
-        url: https://github.com/dockhost/example-python-telegram-bot.git
+        url: https://github.com/yukurkov/chatbot_11b.git
         branch: main
 
         # Set CPU and Memory for first container startup
