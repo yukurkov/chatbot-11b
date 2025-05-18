@@ -178,7 +178,7 @@ def main() -> None:
     )
 
     # Обработчик для произвольных сообщений
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_unknown_message), group=1)
+    # application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_unknown_message), group=1)
     
     # Обработчики команд и callback-ов (идут с более высоким приоритетом)
     application.add_handler(conv_handler, group=2)
