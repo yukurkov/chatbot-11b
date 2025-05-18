@@ -5,7 +5,7 @@ repositories:
 
     echobot:
 
-        url: https://github.com/yukurkov/chatbot_11b.git
+        url: https://github.com/yukurkov/chatbot-11b.git
         branch: main
 
         # Set CPU and Memory for first container startup
