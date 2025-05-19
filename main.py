@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -18,7 +19,6 @@ from telegram.ext import (
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Constants
@@ -29,7 +29,6 @@ JSON_FILE = Path(JSON_DIR) / "user_data.json"
 # Ensure directory exists
 os.makedirs(JSON_DIR, exist_ok=True)
 
-# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     keyboard = [
@@ -42,9 +41,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         rf"Привет, {user.mention_html()}! Выберите действие:",
         reply_markup=reply_markup,
     )
-    return REPORT_PAGES  # Start in neutral state
+    return REPORT_PAGES
 
-# Show results handler
 async def button_show_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -92,7 +90,6 @@ async def show_weekly_results(query) -> int:
     await query.edit_message_text(text=message)
     return ConversationHandler.END
 
-# Callback handlers for button presses
 async def report_pages_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -105,7 +102,6 @@ async def report_exercise_callback(update: Update, context: ContextTypes.DEFAULT
     await query.edit_message_text("⏱ Введите количество минут упражнений за эту неделю:")
     return REPORT_EXERCISE
 
-# Save functions
 async def save_pages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return await save_data(update, "pages", "📖 Сохранено: {} страниц.")
 
@@ -145,13 +141,13 @@ async def save_data(update: Update, field: str, success_message: str) -> int:
     await update.message.reply_text(success_message.format(value))
     return ConversationHandler.END
 
-# Cancel handler
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("🚫 Действие отменено.")
     return ConversationHandler.END
 
-# Main function
 def main() -> None:
+    from telegram.ext import Application
+
     application = Application.builder().token(os.environ.get("TOKEN")).build()
 
     conv_handler = ConversationHandler(
@@ -172,7 +168,14 @@ def main() -> None:
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(button_show_results, pattern="^show_results$"))
 
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Resilient polling loop
+    while True:
+        try:
+            logger.info("Bot is starting polling...")
+            application.run_polling(allowed_updates=Update.ALL_TYPES)
+        except Exception as e:
+            logger.error(f"Bot crashed with error: {e}. Restarting in 5 seconds...")
+            time.sleep(5)
 
 if __name__ == "__main__":
     main()
