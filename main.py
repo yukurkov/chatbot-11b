@@ -1,4 +1,3 @@
-import logging
 import os
 import json
 import time
@@ -15,18 +14,10 @@ from telegram.ext import (
     ConversationHandler,
 )
 
-# Logging setup
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# Constants
 REPORT_PAGES, REPORT_EXERCISE = range(2)
 JSON_DIR = "/mount/dir"
 JSON_FILE = Path(JSON_DIR) / "user_data.json"
 
-# Ensure directory exists
 os.makedirs(JSON_DIR, exist_ok=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -137,8 +128,16 @@ async def save_data(update: Update, field: str, success_message: str) -> int:
     with open(JSON_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
-    logger.info(f"Saved {field} for user {user_id}: {value}")
     await update.message.reply_text(success_message.format(value))
+
+    keyboard = [
+        [InlineKeyboardButton("📖 Указать прочитанные страницы", callback_data='report_pages')],
+        [InlineKeyboardButton("🏋️ Ввести минуты упражнений", callback_data='report_exercise')],
+        [InlineKeyboardButton("📊 Мои результаты за неделю", callback_data='show_results')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("🔙 Вернуться в главное меню:", reply_markup=reply_markup)
+
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -146,8 +145,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 def main() -> None:
-    from telegram.ext import Application
-
     application = Application.builder().token(os.environ.get("TOKEN")).build()
 
     conv_handler = ConversationHandler(
@@ -168,13 +165,10 @@ def main() -> None:
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(button_show_results, pattern="^show_results$"))
 
-    # Resilient polling loop
     while True:
         try:
-            logger.info("Bot is starting polling...")
             application.run_polling(allowed_updates=Update.ALL_TYPES)
-        except Exception as e:
-            logger.error(f"Bot crashed with error: {e}. Restarting in 5 seconds...")
+        except Exception:
             time.sleep(5)
 
 if __name__ == "__main__":
