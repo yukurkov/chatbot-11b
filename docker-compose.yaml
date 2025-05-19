@@ -1,9 +1,11 @@
 services:
-
-    app:
-        build:
-            context: .
-            dockerfile: Dockerfile
-        restart: always
-        environment:
-            TOKEN: MY_TOKEN
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: telegram-bot
+    restart: always
+    environment:
+      TOKEN: MY_TOKEN
+    volumes:
+      - ./data:/mount/dir  # for persistent JSON storage (optional)
