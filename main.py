@@ -1,175 +1,188 @@
+import logging
 import os
-import json
-import time
-from datetime import datetime, timedelta
-from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from datetime import time, datetime
+from typing import Dict
+
+from telegram import Update, Bot
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
-    CallbackQueryHandler,
-    ConversationHandler,
+    CallbackContext,
 )
 
-REPORT_PAGES, REPORT_EXERCISE = range(2)
-JSON_DIR = "/mount/dir"
-JSON_FILE = Path(JSON_DIR) / "user_data.json"
+# Enable logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
-os.makedirs(JSON_DIR, exist_ok=True)
+# Global storage for chat reminders settings
+chat_settings: Dict[int, Dict[str, str]] = {}
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user = update.effective_user
-    keyboard = [
-        [InlineKeyboardButton("📖 Указать прочитанные страницы", callback_data='report_pages')],
-        [InlineKeyboardButton("🏋️ Ввести минуты упражнений", callback_data='report_exercise')],
-        [InlineKeyboardButton("📊 Мои результаты за неделю", callback_data='show_results')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_html(
-        rf"Привет, {user.mention_html()}! Выберите действие:",
-        reply_markup=reply_markup,
+DEFAULT_DAY = "Sunday"
+DEFAULT_TIME = time(hour=17, minute=0)  # 17:00 Moscow time
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a message when the command /start is issued."""
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("Добавь меня в группу, и я буду напоминать о важных вещах!")
+    else:
+        user = update.effective_user
+        await update.message.reply_text(
+            f"Привет {user.mention_html()}! Я бот-напоминатель. "
+            f"Я буду напоминать о челлендже каждое {DEFAULT_DAY} в {DEFAULT_TIME.strftime('%H:%M')} (МСК). "
+            "Используй /setreminder чтобы изменить время напоминаний.",
+            parse_mode="HTML"
+        )
+        # Initialize default settings for the chat
+        chat_id = update.effective_chat.id
+        chat_settings[chat_id] = {
+            "day": DEFAULT_DAY,
+            "time": DEFAULT_TIME.strftime("%H:%M")
+        }
+        # Schedule the job
+        schedule_weekly_reminder(context.application, chat_id)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a message when the command /help is issued."""
+    await update.message.reply_text(
+        "Доступные команды:\n"
+        "/start - начать работу с ботом\n"
+        "/setreminder - установить день и время напоминания\n"
+        "/help - показать это сообщение"
     )
-    return REPORT_PAGES
 
-async def button_show_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    await show_weekly_results(query)
+async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Set the reminder day and time."""
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("Эта команда работает только в группах!")
+        return
 
-async def show_weekly_results(query) -> int:
-    user_id = query.from_user.id
-    today = datetime.now()
-    start_of_week = today - timedelta(days=today.weekday())
+    if not context.args:
+        await update.message.reply_text(
+            "Использование: /setreminder <день недели> <часы:минуты>\n"
+            "Пример: /setreminder Sunday 17:00"
+        )
+        return
 
     try:
-        with open(JSON_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        await query.edit_message_text("📊 Данные не найдены. Вы ещё не вводили результаты.")
-        return ConversationHandler.END
+        day = context.args[0].capitalize()
+        time_str = context.args[1]
+        
+        # Validate day
+        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        if day not in days:
+            raise ValueError("Неверный день недели")
+        
+        # Validate time
+        hours, minutes = map(int, time_str.split(':'))
+        if not (0 <= hours < 24 and 0 <= minutes < 60):
+            raise ValueError("Неверное время")
+        
+        # Save settings
+        chat_id = update.effective_chat.id
+        chat_settings[chat_id] = {
+            "day": day,
+            "time": time_str
+        }
+        
+        # Reschedule the job
+        schedule_weekly_reminder(context.application, chat_id)
+        
+        await update.message.reply_text(
+            f"Напоминание установлено на каждый {day} в {time_str} (МСК)"
+        )
+    except (IndexError, ValueError) as e:
+        await update.message.reply_text(f"Ошибка: {str(e)}\nПопробуйте снова.")
 
-    user_data = data.get(str(user_id), {})
-    pages = user_data.get("pages", [])
-    exercise = user_data.get("exercise_minutes", [])
-
-    weekly_pages = [
-        entry for entry in pages
-        if datetime.strptime(entry["date"], "%Y-%m-%d %H:%M:%S") >= start_of_week
-    ]
-    weekly_exercise = [
-        entry for entry in exercise
-        if datetime.strptime(entry["date"], "%Y-%m-%d %H:%M:%S") >= start_of_week
-    ]
-
-    last_pages = weekly_pages[-1]["value"] if weekly_pages else 0
-    last_exercise = weekly_exercise[-1]["value"] if weekly_exercise else 0
-
-    if last_pages == 0 and last_exercise == 0:
-        message = "📊 Вы ещё не вводили данные за эту неделю."
-    else:
-        is_good = last_pages >= 200 and last_exercise >= 120
-        message = (
-            f"📊 Результаты за неделю:\n"
-            f"📖 Прочитано страниц: {last_pages}\n"
-            f"🏋️ Минут упражнений: {last_exercise}\n\n"
-            f"{'✅ Молодчик! Так держать!' if is_good else '➡️ Можно лучше! Ставьте цели и достигайте их!'}"
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle all messages."""
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("Добавь меня в группу, и я буду напоминать о важных вещах!")
+    elif (
+        update.message and 
+        update.message.text and 
+        "@" + context.bot.username.lower() in update.message.text.lower()
+    ):
+        chat_id = update.effective_chat.id
+        settings = chat_settings.get(chat_id, {
+            "day": DEFAULT_DAY,
+            "time": DEFAULT_TIME.strftime("%H:%M")
+        })
+        await update.message.reply_text(
+            f"Я тут, чтобы напомнить вам о челлендже. "
+            f"Напоминаю каждую {settings['day']} в {settings['time']} (МСК)."
         )
 
-    await query.edit_message_text(text=message)
-    return ConversationHandler.END
-
-async def report_pages_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("📝 Введите количество прочитанных страниц за эту неделю:")
-    return REPORT_PAGES
-
-async def report_exercise_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("⏱ Введите количество минут упражнений за эту неделю:")
-    return REPORT_EXERCISE
-
-async def save_pages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    return await save_data(update, "pages", "📖 Сохранено: {} страниц.")
-
-async def save_exercise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    return await save_data(update, "exercise_minutes", "🏋️ Сохранено: {} минут упражнений.")
-
-async def save_data(update: Update, field: str, success_message: str) -> int:
+async def send_weekly_reminder(context: CallbackContext) -> None:
+    """Send the weekly reminder to the chat."""
+    job = context.job
+    chat_id = job.chat_id
+    
     try:
-        value = int(update.message.text)
-        if value < 0:
-            raise ValueError
-    except ValueError:
-        await update.message.reply_text("❌ Не кури сюда!**.")
-        return REPORT_PAGES if field == "pages" else REPORT_EXERCISE
+        # Get all chat members except bots
+        members = await context.bot.get_chat_administrators(chat_id)
+        mentions = []
+        for member in members:
+            if not member.user.is_bot:
+                mentions.append(member.user.mention_html())
+        
+        if mentions:
+            message = "Всем привет! " + ", ".join(mentions) + "\n"
+            message += "Напишите, сколько вы прочитали за эту неделю и сколько минут упражнений выполнили."
+            await context.bot.send_message(chat_id, message, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Error sending reminder to chat {chat_id}: {e}")
 
-    user_id = update.effective_user.id
-    current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    try:
-        with open(JSON_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        data = {}
-
-    if str(user_id) not in data:
-        data[str(user_id)] = {"pages": [], "exercise_minutes": []}
-
-    data[str(user_id)][field].append({
-        "date": current_date,
-        "value": value,
+def schedule_weekly_reminder(application: Application, chat_id: int) -> None:
+    """Schedule or reschedule the weekly reminder for a chat."""
+    # Remove existing job if any
+    current_jobs = application.job_queue.get_jobs_by_name(str(chat_id))
+    for job in current_jobs:
+        job.schedule_removal()
+    
+    # Get settings for this chat or use defaults
+    settings = chat_settings.get(chat_id, {
+        "day": DEFAULT_DAY,
+        "time": DEFAULT_TIME.strftime("%H:%M")
     })
-
-    with open(JSON_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-
-    await update.message.reply_text(success_message.format(value))
-
-    keyboard = [
-        [InlineKeyboardButton("📖 Указать прочитанные страницы", callback_data='report_pages')],
-        [InlineKeyboardButton("🏋️ Ввести минуты упражнений", callback_data='report_exercise')],
-        [InlineKeyboardButton("📊 Мои результаты за неделю", callback_data='show_results')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("🔙 Вернуться в главное меню:", reply_markup=reply_markup)
-
-    return ConversationHandler.END
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("🚫 Действие отменено.")
-    return ConversationHandler.END
-
-def main() -> None:
-    application = Application.builder().token(os.environ.get("TOKEN")).build()
-
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            REPORT_PAGES: [
-                CallbackQueryHandler(report_pages_callback, pattern="^report_pages$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, save_pages),
-            ],
-            REPORT_EXERCISE: [
-                CallbackQueryHandler(report_exercise_callback, pattern="^report_exercise$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, save_exercise),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
+    
+    # Parse time
+    hours, minutes = map(int, settings["time"].split(':'))
+    reminder_time = time(hour=hours, minute=minutes, tzinfo=datetime.now().astimezone().tzinfo)
+    
+    # Schedule new job
+    application.job_queue.run_repeating(
+        send_weekly_reminder,
+        interval=604800,  # 1 week in seconds
+        first_time=reminder_time,
+        chat_id=chat_id,
+        name=str(chat_id),
+        data={"day": settings["day"]}
     )
 
-    application.add_handler(conv_handler)
-    application.add_handler(CallbackQueryHandler(button_show_results, pattern="^show_results$"))
+def main() -> None:
+    """Start the bot."""
+    token = os.environ.get("TOKEN")
+    if not token:
+        raise ValueError("Необходимо установить переменную окружения TOKEN")
+    
+    application = Application.builder().token(token).build()
 
-    while True:
-        try:
-            application.run_polling(allowed_updates=Update.ALL_TYPES)
-        except Exception:
-            time.sleep(5)
+    # Command handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("setreminder", set_reminder))
+
+    # Message handlers
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # Start the bot
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
